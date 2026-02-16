@@ -201,6 +201,7 @@ async function callClaude(
       cwd: PROJECT_DIR || undefined,
       env: {
         ...process.env,
+        CLAUDECODE: undefined,
       },
     });
 
@@ -488,7 +489,7 @@ console.log("Starting Claude Discord Relay...");
 console.log(`Authorized user: ${ALLOWED_USER_ID || "ANY (not recommended)"}`);
 console.log(`Project directory: ${PROJECT_DIR || "(relay working directory)"}`);
 
-client.once("ready", () => {
+client.once("clientReady", () => {
   console.log(`Bot is running! Logged in as ${client.user?.tag}`);
 });
 
