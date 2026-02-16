@@ -1,5 +1,5 @@
 /**
- * Claude Telegram Relay — Configure launchd (macOS)
+ * Claude Discord Relay — Configure launchd (macOS)
  *
  * Generates and loads launchd plist files with correct paths
  * for the current user and project location.
@@ -126,7 +126,7 @@ interface ServiceConfig {
 
 const SERVICES: Record<string, ServiceConfig> = {
   relay: {
-    label: "com.claude.telegram-relay",
+    label: "com.claude.discord-relay",
     script: "src/relay.ts",
     keepAlive: true,
     description: "Main bot (always running, restarts on crash)",
@@ -232,7 +232,7 @@ async function main() {
     console.log(`  ${green("Done!")} Services are running.`);
     console.log("");
     console.log(`  ${dim("Check status:")}  launchctl list | grep com.claude`);
-    console.log(`  ${dim("View logs:")}     tail -f ${LOGS_DIR}/com.claude.telegram-relay.log`);
+    console.log(`  ${dim("View logs:")}     tail -f ${LOGS_DIR}/com.claude.discord-relay.log`);
     console.log(`  ${dim("Stop all:")}      bun run setup/configure-launchd.ts --unload`);
   }
   console.log("");

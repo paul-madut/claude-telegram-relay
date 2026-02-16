@@ -1,18 +1,23 @@
 /**
- * Claude Code Telegram Relay
+ * Claude Code Discord Relay
  *
- * Minimal relay that connects Telegram to Claude Code CLI.
+ * Minimal relay that connects Discord DMs to Claude Code CLI.
  * Customize this for your own needs.
  *
  * Run: bun run src/relay.ts
  */
 
-import { Bot, Context } from "grammy";
+import {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  Message,
+  ChannelType,
+} from "discord.js";
 import { spawn } from "bun";
 import { writeFile, mkdir, readFile, unlink } from "fs/promises";
 import { join, dirname } from "path";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import { transcribe } from "./transcribe.ts";
 import {
   processMemoryIntents,
   getMemoryContext,
@@ -25,8 +30,8 @@ const PROJECT_ROOT = dirname(dirname(import.meta.path));
 // CONFIGURATION
 // ============================================================
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const ALLOWED_USER_ID = process.env.TELEGRAM_USER_ID || "";
+const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
+const ALLOWED_USER_ID = process.env.DISCORD_USER_ID || "";
 const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
 const PROJECT_DIR = process.env.PROJECT_DIR || "";
 const RELAY_DIR = process.env.RELAY_DIR || join(process.env.HOME || "~", ".claude-relay");
@@ -115,11 +120,12 @@ process.on("SIGTERM", async () => {
 // ============================================================
 
 if (!BOT_TOKEN) {
-  console.error("TELEGRAM_BOT_TOKEN not set!");
+  console.error("DISCORD_BOT_TOKEN not set!");
   console.log("\nTo set up:");
-  console.log("1. Message @BotFather on Telegram");
-  console.log("2. Create a new bot with /newbot");
-  console.log("3. Copy the token to .env");
+  console.log("1. Go to https://discord.com/developers/applications");
+  console.log("2. Create a New Application, then go to Bot → Reset Token");
+  console.log("3. Enable MESSAGE CONTENT intent under Privileged Gateway Intents");
+  console.log("4. Copy the token to .env");
   process.exit(1);
 }
 
@@ -146,7 +152,7 @@ async function saveMessage(
     await supabase.from("messages").insert({
       role,
       content,
-      channel: "telegram",
+      channel: "discord",
       metadata: metadata || {},
     });
   } catch (error) {
@@ -160,23 +166,13 @@ if (!(await acquireLock())) {
   process.exit(1);
 }
 
-const bot = new Bot(BOT_TOKEN);
-
-// ============================================================
-// SECURITY: Only respond to authorized user
-// ============================================================
-
-bot.use(async (ctx, next) => {
-  const userId = ctx.from?.id.toString();
-
-  // If ALLOWED_USER_ID is set, enforce it
-  if (ALLOWED_USER_ID && userId !== ALLOWED_USER_ID) {
-    console.log(`Unauthorized: ${userId}`);
-    await ctx.reply("This bot is private.");
-    return;
-  }
-
-  await next();
+const client = new Client({
+  intents: [
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.Guilds,
+  ],
+  partials: [Partials.Channel, Partials.Message],
 });
 
 // ============================================================
@@ -205,7 +201,7 @@ async function callClaude(
       cwd: PROJECT_DIR || undefined,
       env: {
         ...process.env,
-        // Pass through any env vars Claude might need
+        CLAUDECODE: undefined,
       },
     });
 
@@ -238,103 +234,62 @@ async function callClaude(
 // MESSAGE HANDLERS
 // ============================================================
 
-// Text messages
-bot.on("message:text", async (ctx) => {
-  const text = ctx.message.text;
+async function handleText(message: Message, text: string): Promise<void> {
   console.log(`Message: ${text.substring(0, 50)}...`);
 
-  await ctx.replyWithChatAction("typing");
-
-  await saveMessage("user", text);
-
-  // Gather context: semantic search + facts/goals
-  const [relevantContext, memoryContext] = await Promise.all([
-    getRelevantContext(supabase, text),
-    getMemoryContext(supabase),
-  ]);
-
-  const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
-  const rawResponse = await callClaude(enrichedPrompt, { resume: true });
-
-  // Parse and save any memory intents, strip tags from response
-  const response = await processMemoryIntents(supabase, rawResponse);
-
-  await saveMessage("assistant", response);
-  await sendResponse(ctx, response);
-});
-
-// Voice messages
-bot.on("message:voice", async (ctx) => {
-  const voice = ctx.message.voice;
-  console.log(`Voice message: ${voice.duration}s`);
-  await ctx.replyWithChatAction("typing");
-
-  if (!process.env.VOICE_PROVIDER) {
-    await ctx.reply(
-      "Voice transcription is not set up yet. " +
-        "Run the setup again and choose a voice provider (Groq or local Whisper)."
-    );
-    return;
-  }
+  // Start typing indicator (Discord typing expires after ~10s)
+  const typingInterval = setInterval(() => {
+    message.channel.sendTyping().catch(() => {});
+  }, 8000);
+  message.channel.sendTyping().catch(() => {});
 
   try {
-    const file = await ctx.getFile();
-    const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
-    const response = await fetch(url);
-    const buffer = Buffer.from(await response.arrayBuffer());
+    await saveMessage("user", text);
 
-    const transcription = await transcribe(buffer);
-    if (!transcription) {
-      await ctx.reply("Could not transcribe voice message.");
-      return;
-    }
-
-    await saveMessage("user", `[Voice ${voice.duration}s]: ${transcription}`);
-
+    // Gather context: semantic search + facts/goals
     const [relevantContext, memoryContext] = await Promise.all([
-      getRelevantContext(supabase, transcription),
+      getRelevantContext(supabase, text),
       getMemoryContext(supabase),
     ]);
 
-    const enrichedPrompt = buildPrompt(
-      `[Voice message transcribed]: ${transcription}`,
-      relevantContext,
-      memoryContext
-    );
+    const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
     const rawResponse = await callClaude(enrichedPrompt, { resume: true });
-    const claudeResponse = await processMemoryIntents(supabase, rawResponse);
 
-    await saveMessage("assistant", claudeResponse);
-    await sendResponse(ctx, claudeResponse);
-  } catch (error) {
-    console.error("Voice error:", error);
-    await ctx.reply("Could not process voice message. Check logs for details.");
+    // Parse and save any memory intents, strip tags from response
+    const response = await processMemoryIntents(supabase, rawResponse);
+
+    await saveMessage("assistant", response);
+    await sendResponse(message, response);
+  } finally {
+    clearInterval(typingInterval);
   }
-});
+}
 
-// Photos/Images
-bot.on("message:photo", async (ctx) => {
+async function handleImage(message: Message): Promise<void> {
   console.log("Image received");
-  await ctx.replyWithChatAction("typing");
+
+  const typingInterval = setInterval(() => {
+    message.channel.sendTyping().catch(() => {});
+  }, 8000);
+  message.channel.sendTyping().catch(() => {});
 
   try {
-    // Get highest resolution photo
-    const photos = ctx.message.photo;
-    const photo = photos[photos.length - 1];
-    const file = await ctx.api.getFile(photo.file_id);
+    // Get the first image attachment
+    const attachment = message.attachments.find((a) =>
+      a.contentType?.startsWith("image/")
+    );
+    if (!attachment) return;
 
     // Download the image
     const timestamp = Date.now();
     const filePath = join(UPLOADS_DIR, `image_${timestamp}.jpg`);
 
-    const response = await fetch(
-      `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`
-    );
+    const response = await fetch(attachment.url);
     const buffer = await response.arrayBuffer();
     await writeFile(filePath, Buffer.from(buffer));
 
     // Claude Code can see images via file path
-    const caption = ctx.message.caption || "Analyze this image.";
+    const caption = message.content || "Analyze this image.";
     const prompt = `[Image: ${filePath}]\n\n${caption}`;
 
     await saveMessage("user", `[Image]: ${caption}`);
@@ -346,35 +301,41 @@ bot.on("message:photo", async (ctx) => {
 
     const cleanResponse = await processMemoryIntents(supabase, claudeResponse);
     await saveMessage("assistant", cleanResponse);
-    await sendResponse(ctx, cleanResponse);
+    await sendResponse(message, cleanResponse);
   } catch (error) {
     console.error("Image error:", error);
-    await ctx.reply("Could not process image.");
+    await message.reply("Could not process image.");
+  } finally {
+    clearInterval(typingInterval);
   }
-});
+}
 
-// Documents
-bot.on("message:document", async (ctx) => {
-  const doc = ctx.message.document;
-  console.log(`Document: ${doc.file_name}`);
-  await ctx.replyWithChatAction("typing");
+async function handleDocument(message: Message): Promise<void> {
+  const attachment = message.attachments.find(
+    (a) => !a.contentType?.startsWith("image/")
+  );
+  if (!attachment) return;
+
+  console.log(`Document: ${attachment.name}`);
+
+  const typingInterval = setInterval(() => {
+    message.channel.sendTyping().catch(() => {});
+  }, 8000);
+  message.channel.sendTyping().catch(() => {});
 
   try {
-    const file = await ctx.getFile();
     const timestamp = Date.now();
-    const fileName = doc.file_name || `file_${timestamp}`;
+    const fileName = attachment.name || `file_${timestamp}`;
     const filePath = join(UPLOADS_DIR, `${timestamp}_${fileName}`);
 
-    const response = await fetch(
-      `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`
-    );
+    const response = await fetch(attachment.url);
     const buffer = await response.arrayBuffer();
     await writeFile(filePath, Buffer.from(buffer));
 
-    const caption = ctx.message.caption || `Analyze: ${doc.file_name}`;
+    const caption = message.content || `Analyze: ${attachment.name}`;
     const prompt = `[File: ${filePath}]\n\n${caption}`;
 
-    await saveMessage("user", `[Document: ${doc.file_name}]: ${caption}`);
+    await saveMessage("user", `[Document: ${attachment.name}]: ${caption}`);
 
     const claudeResponse = await callClaude(prompt, { resume: true });
 
@@ -382,10 +343,47 @@ bot.on("message:document", async (ctx) => {
 
     const cleanResponse = await processMemoryIntents(supabase, claudeResponse);
     await saveMessage("assistant", cleanResponse);
-    await sendResponse(ctx, cleanResponse);
+    await sendResponse(message, cleanResponse);
   } catch (error) {
     console.error("Document error:", error);
-    await ctx.reply("Could not process document.");
+    await message.reply("Could not process document.");
+  } finally {
+    clearInterval(typingInterval);
+  }
+}
+
+// ============================================================
+// DISCORD EVENT: messageCreate
+// ============================================================
+
+client.on("messageCreate", async (message: Message) => {
+  // Ignore bot messages
+  if (message.author.bot) return;
+
+  // DM only
+  if (message.channel.type !== ChannelType.DM) return;
+
+  // Security: only respond to authorized user
+  if (ALLOWED_USER_ID && message.author.id !== ALLOWED_USER_ID) {
+    console.log(`Unauthorized: ${message.author.id}`);
+    await message.reply("This bot is private.");
+    return;
+  }
+
+  // Check for attachments
+  const hasImage = message.attachments.some((a) =>
+    a.contentType?.startsWith("image/")
+  );
+  const hasDocument = message.attachments.some(
+    (a) => a.contentType && !a.contentType.startsWith("image/")
+  );
+
+  if (hasImage) {
+    await handleImage(message);
+  } else if (hasDocument) {
+    await handleDocument(message);
+  } else if (message.content) {
+    await handleText(message, message.content);
   }
 });
 
@@ -421,7 +419,7 @@ function buildPrompt(
   });
 
   const parts = [
-    "You are a personal AI assistant responding via Telegram. Keep responses concise and conversational.",
+    "You are a personal AI assistant responding via Discord DM. Keep responses concise and conversational.",
   ];
 
   if (USER_NAME) parts.push(`You are speaking with ${USER_NAME}.`);
@@ -444,17 +442,17 @@ function buildPrompt(
   return parts.join("\n");
 }
 
-async function sendResponse(ctx: Context, response: string): Promise<void> {
-  // Telegram has a 4096 character limit
-  const MAX_LENGTH = 4000;
+async function sendResponse(message: Message, response: string): Promise<void> {
+  // Discord has a 2000 character limit
+  const MAX_LENGTH = 1950;
 
   if (response.length <= MAX_LENGTH) {
-    await ctx.reply(response);
+    await message.reply(response);
     return;
   }
 
   // Split long responses
-  const chunks = [];
+  const chunks: string[] = [];
   let remaining = response;
 
   while (remaining.length > 0) {
@@ -473,8 +471,13 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
     remaining = remaining.substring(splitIndex).trim();
   }
 
-  for (const chunk of chunks) {
-    await ctx.reply(chunk);
+  // First chunk as reply, rest as follow-up messages
+  for (let i = 0; i < chunks.length; i++) {
+    if (i === 0) {
+      await message.reply(chunks[i]);
+    } else {
+      await message.channel.send(chunks[i]);
+    }
   }
 }
 
@@ -482,12 +485,12 @@ async function sendResponse(ctx: Context, response: string): Promise<void> {
 // START
 // ============================================================
 
-console.log("Starting Claude Telegram Relay...");
+console.log("Starting Claude Discord Relay...");
 console.log(`Authorized user: ${ALLOWED_USER_ID || "ANY (not recommended)"}`);
 console.log(`Project directory: ${PROJECT_DIR || "(relay working directory)"}`);
 
-bot.start({
-  onStart: () => {
-    console.log("Bot is running!");
-  },
+client.once("clientReady", () => {
+  console.log(`Bot is running! Logged in as ${client.user?.tag}`);
 });
+
+client.login(BOT_TOKEN);

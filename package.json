@@ -1,22 +1,20 @@
 {
-  "name": "claude-telegram-relay",
+  "name": "claude-discord-relay",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
     "start": "bun run src/relay.ts",
     "dev": "bun run --watch src/relay.ts",
     "setup": "bun run setup/install.ts",
-    "test:telegram": "bun run setup/test-telegram.ts",
+    "test:discord": "bun run setup/test-discord.ts",
     "test:supabase": "bun run setup/test-supabase.ts",
-    "test:voice": "bun run setup/test-voice.ts",
     "setup:launchd": "bun run setup/configure-launchd.ts",
     "setup:services": "bun run setup/configure-services.ts",
     "setup:verify": "bun run setup/verify.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
-    "grammy": "^1.21.1",
-    "groq-sdk": "^0.8.0"
+    "discord.js": "^14.16.0"
   },
   "devDependencies": {
     "@types/bun": "latest"

@@ -1,5 +1,5 @@
 /**
- * Claude Telegram Relay — Setup
+ * Claude Discord Relay — Setup
  *
  * Checks prerequisites, installs dependencies, creates directories,
  * and prepares .env file.
@@ -127,7 +127,7 @@ async function main() {
   const platform = { darwin: "macOS", win32: "Windows", linux: "Linux" }[process.platform] || process.platform;
 
   console.log("");
-  console.log(bold("  Claude Telegram Relay — Setup"));
+  console.log(bold("  Claude Discord Relay — Setup"));
   console.log(dim(`  ${platform} • ${process.arch}`));
 
   // 1. Prerequisites
@@ -160,7 +160,7 @@ async function main() {
   if (!envReady) {
     steps.push(`Edit .env with your API keys: ${cyan("$EDITOR .env")}`);
   }
-  steps.push(`Test Telegram connection: ${cyan("bun run setup/test-telegram.ts")}`);
+  steps.push(`Test Discord connection: ${cyan("bun run setup/test-discord.ts")}`);
   steps.push(`Test Supabase connection: ${cyan("bun run setup/test-supabase.ts")}`);
   steps.push(`Start the bot: ${cyan("bun run start")}`);
 

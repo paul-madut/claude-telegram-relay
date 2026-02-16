@@ -1,5 +1,5 @@
 /**
- * Claude Telegram Relay — Verify Setup
+ * Claude Discord Relay — Verify Setup
  *
  * Runs all health checks in sequence: env, Telegram, Supabase,
  * services, and reports overall status.
@@ -51,7 +51,7 @@ async function loadEnv(): Promise<Record<string, string>> {
 
 async function main() {
   console.log("");
-  console.log(bold("  Claude Telegram Relay — Health Check"));
+  console.log(bold("  Claude Discord Relay — Health Check"));
   console.log("");
 
   const env = await loadEnv();
@@ -62,25 +62,27 @@ async function main() {
   existsSync(join(PROJECT_ROOT, "node_modules")) ? pass("Dependencies installed") : fail("node_modules missing — run: bun install");
   existsSync(join(PROJECT_ROOT, "config", "profile.md")) ? pass("Profile configured") : warn("No profile.md — copy config/profile.example.md");
 
-  // 2. Telegram
-  console.log(`\n${bold("  Telegram")}`);
-  const token = env.TELEGRAM_BOT_TOKEN || "";
-  const userId = env.TELEGRAM_USER_ID || "";
+  // 2. Discord
+  console.log(`\n${bold("  Discord")}`);
+  const token = env.DISCORD_BOT_TOKEN || "";
+  const userId = env.DISCORD_USER_ID || "";
 
   if (!token || token.includes("your_")) {
-    fail("TELEGRAM_BOT_TOKEN not set");
+    fail("DISCORD_BOT_TOKEN not set");
   } else {
     try {
-      const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+      const res = await fetch("https://discord.com/api/v10/users/@me", {
+        headers: { Authorization: `Bot ${token}` },
+      });
       const data = await res.json() as any;
-      data.ok ? pass(`Bot: @${data.result.username}`) : fail(`Invalid token: ${data.description}`);
+      res.ok ? pass(`Bot: ${data.username} (${data.id})`) : fail(`Invalid token: ${data.message}`);
     } catch (e: any) {
-      fail(`Telegram API unreachable: ${e.message}`);
+      fail(`Discord API unreachable: ${e.message}`);
     }
   }
 
   if (!userId || userId.includes("your_")) {
-    fail("TELEGRAM_USER_ID not set");
+    fail("DISCORD_USER_ID not set");
   } else {
     pass(`User ID: ${userId}`);
   }
@@ -111,7 +113,7 @@ async function main() {
   // 4. Services (macOS only)
   if (process.platform === "darwin") {
     console.log(`\n${bold("  Services (launchd)")}`);
-    for (const label of ["com.claude.telegram-relay", "com.claude.smart-checkin", "com.claude.morning-briefing"]) {
+    for (const label of ["com.claude.discord-relay", "com.claude.smart-checkin", "com.claude.morning-briefing"]) {
       const proc = Bun.spawn(["launchctl", "list", label], { stdout: "pipe", stderr: "pipe" });
       const code = await proc.exited;
       code === 0 ? pass(`${label} loaded`) : warn(`${label} not loaded`);

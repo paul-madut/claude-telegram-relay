@@ -1,5 +1,5 @@
 [Unit]
-Description=Claude Code Telegram Relay
+Description=Claude Code Discord Relay
 After=network.target
 
 [Service]
@@ -7,7 +7,7 @@ Type=simple
 # UPDATE THIS: Your username
 User=YOUR_USERNAME
 # UPDATE THIS: Path to relay directory
-WorkingDirectory=/home/YOUR_USERNAME/claude-telegram-relay
+WorkingDirectory=/home/YOUR_USERNAME/claude-discord-relay
 # UPDATE THIS: Path to bun
 ExecStart=/home/YOUR_USERNAME/.bun/bin/bun run src/relay.ts
 Restart=always
@@ -18,7 +18,7 @@ Environment=HOME=/home/YOUR_USERNAME
 Environment=PATH=/home/YOUR_USERNAME/.bun/bin:/usr/local/bin:/usr/bin:/bin
 
 # Optional: Load .env file
-# EnvironmentFile=/home/YOUR_USERNAME/claude-telegram-relay/.env
+# EnvironmentFile=/home/YOUR_USERNAME/claude-discord-relay/.env
 
 # Logging
 StandardOutput=journal
