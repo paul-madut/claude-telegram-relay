@@ -1,8 +1,10 @@
 /**
- * Claude Code Discord Relay
+ * Claude Code Discord Relay — Autonomous Agent
  *
- * Minimal relay that connects Discord DMs to Claude Code CLI.
- * Customize this for your own needs.
+ * Connects Discord DMs to Claude Code CLI with:
+ * - Real-time message handling (text, images, documents)
+ * - Background task queue and autonomous execution
+ * - Persistent memory (Supabase)
  *
  * Run: bun run src/relay.ts
  */
@@ -16,37 +18,34 @@ import {
 } from "discord.js";
 import { spawn } from "bun";
 import { writeFile, mkdir, readFile, unlink } from "fs/promises";
-import { join, dirname } from "path";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { join } from "path";
 import {
   processMemoryIntents,
   getMemoryContext,
   getRelevantContext,
 } from "./memory.ts";
-
-const PROJECT_ROOT = dirname(dirname(import.meta.path));
-
-// ============================================================
-// CONFIGURATION
-// ============================================================
-
-const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
-const ALLOWED_USER_ID = process.env.DISCORD_USER_ID || "";
-const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
-const PROJECT_DIR = process.env.PROJECT_DIR || "";
-const RELAY_DIR = process.env.RELAY_DIR || join(process.env.HOME || "~", ".claude-relay");
-
-// Directories
-const TEMP_DIR = join(RELAY_DIR, "temp");
-const UPLOADS_DIR = join(RELAY_DIR, "uploads");
-
-// Session tracking for conversation continuity
-const SESSION_FILE = join(RELAY_DIR, "session.json");
-
-interface SessionState {
-  sessionId: string | null;
-  lastActivity: string;
-}
+import { sendResponse } from "./discord-helpers.ts";
+import { executionTick } from "./executor.ts";
+import { createTask } from "./tasks.ts";
+import { startClickUpSync, pushNewTaskToClickUp } from "./sync/clickup-sync.ts";
+import { processClickUpIntents, getClickUpContext } from "./clickup-intents.ts";
+import type { SessionState } from "./types.ts";
+import {
+  BOT_TOKEN,
+  ALLOWED_USER_ID,
+  CLAUDE_PATH,
+  PROJECT_DIR,
+  RELAY_DIR,
+  TEMP_DIR,
+  UPLOADS_DIR,
+  SESSION_FILE,
+  LOCK_FILE,
+  USER_NAME,
+  USER_TIMEZONE,
+  supabase,
+  loadProfile,
+  getProfileContext,
+} from "./config.ts";
 
 // ============================================================
 // SESSION MANAGEMENT
@@ -71,8 +70,6 @@ let session = await loadSession();
 // LOCK FILE (prevent multiple instances)
 // ============================================================
 
-const LOCK_FILE = join(RELAY_DIR, "bot.lock");
-
 async function acquireLock(): Promise<boolean> {
   try {
     const existingLock = await readFile(LOCK_FILE, "utf-8").catch(() => null);
@@ -80,7 +77,7 @@ async function acquireLock(): Promise<boolean> {
     if (existingLock) {
       const pid = parseInt(existingLock);
       try {
-        process.kill(pid, 0); // Check if process exists
+        process.kill(pid, 0);
         console.log(`Another instance running (PID: ${pid})`);
         return false;
       } catch {
@@ -100,7 +97,6 @@ async function releaseLock(): Promise<void> {
   await unlink(LOCK_FILE).catch(() => {});
 }
 
-// Cleanup on exit
 process.on("exit", () => {
   try {
     require("fs").unlinkSync(LOCK_FILE);
@@ -129,18 +125,9 @@ if (!BOT_TOKEN) {
   process.exit(1);
 }
 
-// Create directories
 await mkdir(TEMP_DIR, { recursive: true });
 await mkdir(UPLOADS_DIR, { recursive: true });
-
-// ============================================================
-// SUPABASE (optional — only if configured)
-// ============================================================
-
-const supabase: SupabaseClient | null =
-  process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY
-    ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY)
-    : null;
+await loadProfile();
 
 async function saveMessage(
   role: string,
@@ -176,7 +163,7 @@ const client = new Client({
 });
 
 // ============================================================
-// CORE: Call Claude CLI
+// CORE: Call Claude CLI (for direct DM responses)
 // ============================================================
 
 async function callClaude(
@@ -185,7 +172,6 @@ async function callClaude(
 ): Promise<string> {
   const args = [CLAUDE_PATH, "-p", prompt];
 
-  // Resume previous session if available and requested
   if (options?.resume && session.sessionId) {
     args.push("--resume", session.sessionId);
   }
@@ -215,7 +201,6 @@ async function callClaude(
       return `Error: ${stderr || "Claude exited with code " + exitCode}`;
     }
 
-    // Extract session ID from output if present (for --resume)
     const sessionMatch = output.match(/Session ID: ([a-f0-9-]+)/i);
     if (sessionMatch) {
       session.sessionId = sessionMatch[1];
@@ -231,13 +216,72 @@ async function callClaude(
 }
 
 // ============================================================
+// TASK DETECTION
+// ============================================================
+
+/**
+ * Detect if a message is a task assignment vs a conversational message.
+ * Returns the task description if it's a task, null otherwise.
+ */
+function detectTask(text: string): { title: string; description: string } | null {
+  // Explicit "task:" prefix
+  const taskPrefix = text.match(/^task:\s*(.+)/i);
+  if (taskPrefix) {
+    const desc = taskPrefix[1].trim();
+    return { title: desc.substring(0, 100), description: desc };
+  }
+
+  // Explicit "do:" prefix
+  const doPrefix = text.match(/^do:\s*(.+)/i);
+  if (doPrefix) {
+    const desc = doPrefix[1].trim();
+    return { title: desc.substring(0, 100), description: desc };
+  }
+
+  // Explicit "background:" prefix
+  const bgPrefix = text.match(/^background:\s*(.+)/i);
+  if (bgPrefix) {
+    const desc = bgPrefix[1].trim();
+    return { title: desc.substring(0, 100), description: desc };
+  }
+
+  return null;
+}
+
+// ============================================================
 // MESSAGE HANDLERS
 // ============================================================
 
 async function handleText(message: Message, text: string): Promise<void> {
   console.log(`Message: ${text.substring(0, 50)}...`);
 
-  // Start typing indicator (Discord typing expires after ~10s)
+  // Check if this is a task assignment
+  const taskInfo = detectTask(text);
+  if (taskInfo && supabase) {
+    const task = await createTask(supabase, {
+      title: taskInfo.title,
+      prompt: taskInfo.description,
+      description: taskInfo.description,
+      metadata: { source: "discord", bot_executable: true },
+    });
+
+    if (task) {
+      // Push to ClickUp for visibility
+      await pushNewTaskToClickUp(supabase, task).catch((err) =>
+        console.error("ClickUp push error:", err)
+      );
+
+      await message.reply(
+        `**Task queued:** ${taskInfo.title}\nID: \`${task.id}\`\nThe agent will work on this in the background.`
+      );
+      await saveMessage("user", `[Task created]: ${text}`);
+    } else {
+      await message.reply("Could not create task. Is Supabase configured?");
+    }
+    return;
+  }
+
+  // Regular conversational message
   const typingInterval = setInterval(() => {
     message.channel.sendTyping().catch(() => {});
   }, 8000);
@@ -246,20 +290,31 @@ async function handleText(message: Message, text: string): Promise<void> {
   try {
     await saveMessage("user", text);
 
-    // Gather context: semantic search + facts/goals
     const [relevantContext, memoryContext] = await Promise.all([
       getRelevantContext(supabase, text),
       getMemoryContext(supabase),
     ]);
 
-    const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
+    const clickUpContext = await getClickUpContext();
+    const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext, clickUpContext);
     const rawResponse = await callClaude(enrichedPrompt, { resume: true });
 
-    // Parse and save any memory intents, strip tags from response
-    const response = await processMemoryIntents(supabase, rawResponse);
+    // Process intent tags (memory + ClickUp actions)
+    const afterMemory = await processMemoryIntents(supabase, rawResponse);
+    const { clean: response, results: clickUpResults } =
+      await processClickUpIntents(afterMemory);
 
-    await saveMessage("assistant", response);
-    await sendResponse(message, response);
+    // Append ClickUp action results if any
+    let finalResponse = response;
+    if (clickUpResults.length) {
+      const summary = clickUpResults
+        .map((r) => `${r.success ? "done" : "failed"}: ${r.task} — ${r.detail}`)
+        .join("\n");
+      finalResponse += `\n\n**ClickUp actions:**\n${summary}`;
+    }
+
+    await saveMessage("assistant", finalResponse);
+    await sendResponse(message, finalResponse);
   } finally {
     clearInterval(typingInterval);
   }
@@ -274,13 +329,11 @@ async function handleImage(message: Message): Promise<void> {
   message.channel.sendTyping().catch(() => {});
 
   try {
-    // Get the first image attachment
     const attachment = message.attachments.find((a) =>
       a.contentType?.startsWith("image/")
     );
     if (!attachment) return;
 
-    // Download the image
     const timestamp = Date.now();
     const filePath = join(UPLOADS_DIR, `image_${timestamp}.jpg`);
 
@@ -288,7 +341,6 @@ async function handleImage(message: Message): Promise<void> {
     const buffer = await response.arrayBuffer();
     await writeFile(filePath, Buffer.from(buffer));
 
-    // Claude Code can see images via file path
     const caption = message.content || "Analyze this image.";
     const prompt = `[Image: ${filePath}]\n\n${caption}`;
 
@@ -296,7 +348,6 @@ async function handleImage(message: Message): Promise<void> {
 
     const claudeResponse = await callClaude(prompt, { resume: true });
 
-    // Cleanup after processing
     await unlink(filePath).catch(() => {});
 
     const cleanResponse = await processMemoryIntents(supabase, claudeResponse);
@@ -357,20 +408,15 @@ async function handleDocument(message: Message): Promise<void> {
 // ============================================================
 
 client.on("messageCreate", async (message: Message) => {
-  // Ignore bot messages
   if (message.author.bot) return;
-
-  // DM only
   if (message.channel.type !== ChannelType.DM) return;
 
-  // Security: only respond to authorized user
   if (ALLOWED_USER_ID && message.author.id !== ALLOWED_USER_ID) {
     console.log(`Unauthorized: ${message.author.id}`);
     await message.reply("This bot is private.");
     return;
   }
 
-  // Check for attachments
   const hasImage = message.attachments.some((a) =>
     a.contentType?.startsWith("image/")
   );
@@ -391,21 +437,11 @@ client.on("messageCreate", async (message: Message) => {
 // HELPERS
 // ============================================================
 
-// Load profile once at startup
-let profileContext = "";
-try {
-  profileContext = await readFile(join(PROJECT_ROOT, "config", "profile.md"), "utf-8");
-} catch {
-  // No profile yet — that's fine
-}
-
-const USER_NAME = process.env.USER_NAME || "";
-const USER_TIMEZONE = process.env.USER_TIMEZONE || Intl.DateTimeFormat().resolvedOptions().timeZone;
-
 function buildPrompt(
   userMessage: string,
   relevantContext?: string,
-  memoryContext?: string
+  memoryContext?: string,
+  clickUpContext?: string
 ): string {
   const now = new Date();
   const timeStr = now.toLocaleString("en-US", {
@@ -418,6 +454,8 @@ function buildPrompt(
     minute: "2-digit",
   });
 
+  const profileContext = getProfileContext();
+
   const parts = [
     "You are a personal AI assistant responding via Discord DM. Keep responses concise and conversational.",
   ];
@@ -427,6 +465,7 @@ function buildPrompt(
   if (profileContext) parts.push(`\nProfile:\n${profileContext}`);
   if (memoryContext) parts.push(`\n${memoryContext}`);
   if (relevantContext) parts.push(`\n${relevantContext}`);
+  if (clickUpContext) parts.push(`\n${clickUpContext}`);
 
   parts.push(
     "\nMEMORY MANAGEMENT:" +
@@ -437,48 +476,49 @@ function buildPrompt(
       "\n[DONE: search text for completed goal]"
   );
 
+  parts.push(
+    "\nCLICKUP TASK MANAGEMENT:" +
+      "\nYou have direct access to the user's ClickUp tasks (listed above under CLICKUP TASKS if any exist)." +
+      "\nWhen the user asks you to manage ClickUp tasks, use these tags (executed automatically and hidden from user):" +
+      '\n[CLICKUP_COMPLETE: task name] — Set task status to "ready for review"' +
+      "\n[CLICKUP_CREATE: task name | DESCRIPTION: details | PRIORITY: 1-4 | TAGS: tag1,tag2] — Create a new task (PRIORITY/DESCRIPTION/TAGS optional)" +
+      "\n[CLICKUP_UPDATE: task name | STATUS: new status] — Change a task's status" +
+      "\n[CLICKUP_COMMENT: task name | COMMENT: text] — Add a comment to a task" +
+      "\nMatch task names loosely — partial matches work. Use the exact task names from the CLICKUP TASKS list when available." +
+      "\nExecute these actions directly. Do NOT ask for approval or mention scripts — just do it and confirm."
+  );
+
   parts.push(`\nUser: ${userMessage}`);
 
   return parts.join("\n");
 }
 
-async function sendResponse(message: Message, response: string): Promise<void> {
-  // Discord has a 2000 character limit
-  const MAX_LENGTH = 1950;
+// ============================================================
+// AUTONOMOUS EXECUTION LOOP
+// ============================================================
 
-  if (response.length <= MAX_LENGTH) {
-    await message.reply(response);
+const EXECUTION_INTERVAL = 30_000; // 30 seconds
+
+function startExecutionLoop(): void {
+  if (!supabase) {
+    console.log("[Executor] Supabase not configured — task queue disabled");
     return;
   }
 
-  // Split long responses
-  const chunks: string[] = [];
-  let remaining = response;
+  console.log(
+    `[Executor] Task queue active (checking every ${EXECUTION_INTERVAL / 1000}s)`
+  );
 
-  while (remaining.length > 0) {
-    if (remaining.length <= MAX_LENGTH) {
-      chunks.push(remaining);
-      break;
+  setInterval(async () => {
+    try {
+      await executionTick();
+    } catch (error) {
+      console.error("[Executor] Tick error:", error);
     }
+  }, EXECUTION_INTERVAL);
 
-    // Try to split at a natural boundary
-    let splitIndex = remaining.lastIndexOf("\n\n", MAX_LENGTH);
-    if (splitIndex === -1) splitIndex = remaining.lastIndexOf("\n", MAX_LENGTH);
-    if (splitIndex === -1) splitIndex = remaining.lastIndexOf(" ", MAX_LENGTH);
-    if (splitIndex === -1) splitIndex = MAX_LENGTH;
-
-    chunks.push(remaining.substring(0, splitIndex));
-    remaining = remaining.substring(splitIndex).trim();
-  }
-
-  // First chunk as reply, rest as follow-up messages
-  for (let i = 0; i < chunks.length; i++) {
-    if (i === 0) {
-      await message.reply(chunks[i]);
-    } else {
-      await message.channel.send(chunks[i]);
-    }
-  }
+  // Start ClickUp bidirectional sync
+  startClickUpSync(supabase);
 }
 
 // ============================================================
@@ -491,6 +531,7 @@ console.log(`Project directory: ${PROJECT_DIR || "(relay working directory)"}`);
 
 client.once("clientReady", () => {
   console.log(`Bot is running! Logged in as ${client.user?.tag}`);
+  startExecutionLoop();
 });
 
 client.login(BOT_TOKEN);

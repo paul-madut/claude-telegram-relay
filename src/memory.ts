@@ -6,6 +6,7 @@
  *   [REMEMBER: fact]
  *   [GOAL: text | DEADLINE: date]
  *   [DONE: search text]
+ *   [TASK: title | PRIORITY: high/medium/low]
  *
  * The relay parses these tags, saves to Supabase, and strips them
  * from the response before sending to the user.
@@ -43,6 +44,15 @@ export async function processMemoryIntents(
       content: match[1],
       deadline: match[2] || null,
     });
+    clean = clean.replace(match[0], "");
+  }
+
+  // [TASK: title | PRIORITY: high/medium/low]
+  // These are collected but NOT saved here — the caller (relay.ts) handles task creation.
+  // We just strip the tags from the response.
+  for (const match of response.matchAll(
+    /\[TASK:\s*(.+?)(?:\s*\|\s*PRIORITY:\s*(.+?))?\]/gi
+  )) {
     clean = clean.replace(match[0], "");
   }
 
