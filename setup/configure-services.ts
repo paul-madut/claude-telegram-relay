@@ -1,5 +1,5 @@
 /**
- * Claude Telegram Relay — Configure Services (Windows/Linux)
+ * Claude Discord Relay — Configure Services (Windows/Linux)
  *
  * Sets up PM2 for process management on non-macOS systems.
  *
@@ -42,7 +42,7 @@ interface ServiceDef {
 
 const SERVICES: Record<string, ServiceDef> = {
   relay: {
-    name: "claude-telegram-relay",
+    name: "claude-discord-relay",
     script: "src/relay.ts",
     description: "Main bot (always running)",
   },

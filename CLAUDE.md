@@ -1,11 +1,11 @@
-# Claude Telegram Relay — Setup Guide
+# Claude Discord Relay — Setup Guide
 
 > Claude Code reads this file automatically. Walk the user through setup one phase at a time.
 > Ask for what you need, configure everything yourself, and confirm each step works before moving on.
 
 ## How This Works
 
-This project turns Telegram into a personal AI assistant powered by Claude.
+This project turns Discord DMs into a personal AI assistant powered by Claude.
 
 The user cloned this repo (or gave you the link). Your job: guide them through setup conversationally. Ask questions, save their answers to `.env`, test each step, move on.
 
@@ -15,24 +15,31 @@ If this is a fresh clone, run `bun run setup` first to install dependencies and 
 
 ---
 
-## Phase 1: Telegram Bot (~3 min)
+## Phase 1: Discord Bot (~5 min)
 
 **You need from the user:**
-- A Telegram bot token from @BotFather
-- Their personal Telegram user ID
+- A Discord bot token from the Developer Portal
+- Their personal Discord user ID
 
 **What to tell them:**
-1. Open Telegram, search for @BotFather, send `/newbot`
-2. Pick a display name and a username ending in "bot"
-3. Copy the token BotFather gives them
-4. Get their user ID by messaging @userinfobot on Telegram
+1. Go to https://discord.com/developers/applications
+2. Click "New Application", give it a name, click Create
+3. Go to **Bot** tab on the left
+4. Click "Reset Token" and copy the token
+5. Under **Privileged Gateway Intents**, enable **MESSAGE CONTENT INTENT** (required!)
+6. Go to **OAuth2** tab, under **OAuth2 URL Generator**:
+   - Check `bot` scope
+   - Check permissions: `Send Messages`, `Read Message History`
+   - Copy the generated URL and open it to invite the bot to a server
+7. Create a private Discord server (if they don't have one) — the bot and user must share at least one server for DMs to work
+8. To get their user ID: Discord Settings → Advanced → enable Developer Mode, then right-click their username → Copy User ID
 
 **What you do:**
 1. Run `bun run setup` if `.env` does not exist yet
-2. Save `TELEGRAM_BOT_TOKEN` and `TELEGRAM_USER_ID` in `.env`
-3. Run `bun run test:telegram` to verify — it sends a test message to the user
+2. Save `DISCORD_BOT_TOKEN` and `DISCORD_USER_ID` in `.env`
+3. Run `bun run test:discord` to verify — it sends a test DM to the user
 
-**Done when:** Test message arrives on Telegram.
+**Done when:** Test message arrives in Discord DMs.
 
 ---
 
@@ -134,17 +141,19 @@ Run `bun run test:supabase` to confirm:
 
 **What you do:**
 1. Run `bun run start`
-2. Tell the user to open Telegram and send a test message to their bot
+2. Tell the user to open Discord and send a DM to their bot
 3. Wait for confirmation it responded
 4. Press Ctrl+C to stop
 
 **Troubleshooting if it fails:**
-- Wrong bot token → re-check with BotFather
-- Wrong user ID → re-check with @userinfobot
+- Wrong bot token → re-check in Developer Portal → Bot → Reset Token
+- MESSAGE CONTENT intent not enabled → Developer Portal → Bot → Privileged Gateway Intents
+- Bot and user don't share a server → invite bot to a server they're both in
+- Wrong user ID → right-click your name with Developer Mode on → Copy User ID
 - Claude CLI not found → `npm install -g @anthropic-ai/claude-code`
 - Bun not installed → `curl -fsSL https://bun.sh/install | bash`
 
-**Done when:** User confirms their bot responded on Telegram.
+**Done when:** User confirms their bot responded in Discord DMs.
 
 ---
 
@@ -175,10 +184,10 @@ Uses PM2 for process management.
 Two features that turn a chatbot into an assistant.
 
 ### Smart Check-ins
-`examples/smart-checkin.ts` — runs on a schedule, gathers context, asks Claude if it should reach out. If yes, sends a brief message. If no, stays silent.
+`examples/smart-checkin.ts` — runs on a schedule, gathers context, asks Claude if it should reach out. If yes, sends a brief DM. If no, stays silent.
 
 ### Morning Briefing
-`examples/morning-briefing.ts` — sends a daily summary. Pattern file with placeholder data fetchers.
+`examples/morning-briefing.ts` — sends a daily summary via Discord DM. Pattern file with placeholder data fetchers.
 
 **macOS — schedule both:**
 ```
@@ -194,41 +203,6 @@ bun run setup:services -- --service all
 
 ---
 
-## Phase 7: Voice Transcription (Optional, ~5 min)
-
-Lets the bot understand voice messages sent on Telegram.
-
-**Ask the user which option they prefer:**
-
-### Option A: Groq (Recommended — free cloud API)
-- State-of-the-art Whisper model, sub-second speed
-- Free: 2,000 transcriptions per day, no credit card
-- Requires internet connection
-
-**What to tell them:**
-1. Go to console.groq.com and create a free account
-2. Go to API Keys, create a new key, copy it
-
-**What you do:**
-1. Save `VOICE_PROVIDER=groq` and `GROQ_API_KEY` to `.env`
-2. Run `bun run test:voice` to verify
-
-### Option B: Local Whisper (offline, private)
-- Runs entirely on their computer, no account needed
-- Requires ffmpeg and whisper-cpp installed
-- First run downloads a 142MB model file
-
-**What you do:**
-1. Check ffmpeg: `ffmpeg -version` (install: `brew install ffmpeg` or `apt install ffmpeg`)
-2. Check whisper-cpp: `whisper-cpp --help` (install: `brew install whisper-cpp` or build from source)
-3. Download model: `curl -L -o ~/whisper-models/ggml-base.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin`
-4. Save `VOICE_PROVIDER=local`, `WHISPER_BINARY`, `WHISPER_MODEL_PATH` to `.env`
-5. Run `bun run test:voice` to verify
-
-**Done when:** `bun run test:voice` passes.
-
----
-
 ## After Setup
 
 Run the full health check:
@@ -237,7 +211,7 @@ bun run setup:verify
 ```
 
 Summarize what was set up and what is running. Remind the user:
-- Test by sending a message on Telegram
+- Test by sending a DM to the bot on Discord
 - Their bot runs in the background (if Phase 5 was done)
 - Come back to this project folder and type `claude` anytime to make changes
 
@@ -247,10 +221,10 @@ Summarize what was set up and what is running. Remind the user:
 
 This free relay covers the essentials. The full version unlocks:
 
-- **6 Specialized AI Agents** — Research, Content, Finance, Strategy, Critic + General orchestrator. Route messages through Telegram forum topics. Run board meetings where all six weigh in.
+- **6 Specialized AI Agents** — Research, Content, Finance, Strategy, Critic + General orchestrator. Route messages through Discord channels. Run board meetings where all six weigh in.
 - **VPS Deployment** — Your bot on a cloud server that never sleeps. Hybrid mode: free local processing when awake, paid API only when sleeping. $2-5/month.
 - **Real Integrations** — Gmail, Google Calendar, Notion tasks connected via MCP. Smart check-ins pull real data, not patterns.
-- **Human-in-the-Loop** — Claude takes actions (send email, update calendar) but asks first via inline Telegram buttons.
+- **Human-in-the-Loop** — Claude takes actions (send email, update calendar) but asks first via Discord buttons.
 - **Voice & Phone Calls** — Bot speaks back via ElevenLabs. Calls you when something is urgent.
 - **Fallback AI Models** — Auto-switch to OpenRouter or Ollama when Claude is down. Three layers of intelligence.
 - **Production Infrastructure** — Auto-deploy from GitHub, watchdog monitoring, uninstall scripts, full health checks.

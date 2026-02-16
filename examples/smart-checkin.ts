@@ -15,9 +15,10 @@ import { spawn } from "bun";
 import { readFile, writeFile } from "fs/promises";
 import { join } from "path";
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
+const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
+const USER_ID = process.env.DISCORD_USER_ID || "";
 const CLAUDE_PATH = process.env.CLAUDE_PATH || "claude";
+const DISCORD_API = "https://discord.com/api/v10";
 const STATE_FILE =
   process.env.CHECKIN_STATE_FILE || "/tmp/checkin-state.json";
 
@@ -73,23 +74,36 @@ async function getLastActivity(): Promise<string> {
 }
 
 // ============================================================
-// TELEGRAM
+// DISCORD
 // ============================================================
 
-async function sendTelegram(message: string): Promise<boolean> {
+async function sendDiscord(message: string): Promise<boolean> {
   try {
-    const response = await fetch(
-      `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
+    // Step 1: Create/get DM channel
+    const dmRes = await fetch(`${DISCORD_API}/users/@me/channels`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bot ${BOT_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ recipient_id: USER_ID }),
+    });
+    if (!dmRes.ok) return false;
+    const dmData = (await dmRes.json()) as any;
+
+    // Step 2: Send message
+    const msgRes = await fetch(
+      `${DISCORD_API}/channels/${dmData.id}/messages`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: CHAT_ID,
-          text: message,
-        }),
+        headers: {
+          Authorization: `Bot ${BOT_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ content: message }),
       }
     );
-    return response.ok;
+    return msgRes.ok;
   } catch {
     return false;
   }
@@ -171,8 +185,8 @@ REASON: [Why you decided this]
 async function main() {
   console.log("Running smart check-in...");
 
-  if (!BOT_TOKEN || !CHAT_ID) {
-    console.error("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_USER_ID");
+  if (!BOT_TOKEN || !USER_ID) {
+    console.error("Missing DISCORD_BOT_TOKEN or DISCORD_USER_ID");
     process.exit(1);
   }
 
@@ -180,7 +194,7 @@ async function main() {
 
   if (shouldCheckin && message && message !== "none") {
     console.log("Sending check-in...");
-    const success = await sendTelegram(message);
+    const success = await sendDiscord(message);
 
     if (success) {
       // Update state

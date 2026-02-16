@@ -1,7 +1,7 @@
 /**
  * Morning Briefing Example
  *
- * Sends a daily summary via Telegram at a scheduled time.
+ * Sends a daily summary via Discord DM at a scheduled time.
  * Customize this for your own morning routine.
  *
  * Schedule this with:
@@ -12,31 +12,43 @@
  * Run manually: bun run examples/morning-briefing.ts
  */
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const CHAT_ID = process.env.TELEGRAM_USER_ID || "";
+const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
+const USER_ID = process.env.DISCORD_USER_ID || "";
+const DISCORD_API = "https://discord.com/api/v10";
 
 // ============================================================
-// TELEGRAM HELPER
+// DISCORD HELPER
 // ============================================================
 
-async function sendTelegram(message: string): Promise<boolean> {
+async function sendDiscord(message: string): Promise<boolean> {
   try {
-    const response = await fetch(
-      `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
+    // Step 1: Create/get DM channel
+    const dmRes = await fetch(`${DISCORD_API}/users/@me/channels`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bot ${BOT_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ recipient_id: USER_ID }),
+    });
+    if (!dmRes.ok) return false;
+    const dmData = (await dmRes.json()) as any;
+
+    // Step 2: Send message
+    const msgRes = await fetch(
+      `${DISCORD_API}/channels/${dmData.id}/messages`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: CHAT_ID,
-          text: message,
-          parse_mode: "Markdown",
-        }),
+        headers: {
+          Authorization: `Bot ${BOT_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ content: message }),
       }
     );
-
-    return response.ok;
+    return msgRes.ok;
   } catch (error) {
-    console.error("Telegram error:", error);
+    console.error("Discord error:", error);
     return false;
   }
 }
@@ -161,15 +173,15 @@ async function buildBriefing(): Promise<string> {
 async function main() {
   console.log("Building morning briefing...");
 
-  if (!BOT_TOKEN || !CHAT_ID) {
-    console.error("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_USER_ID");
+  if (!BOT_TOKEN || !USER_ID) {
+    console.error("Missing DISCORD_BOT_TOKEN or DISCORD_USER_ID");
     process.exit(1);
   }
 
   const briefing = await buildBriefing();
 
   console.log("Sending briefing...");
-  const success = await sendTelegram(briefing);
+  const success = await sendDiscord(briefing);
 
   if (success) {
     console.log("Briefing sent successfully!");
